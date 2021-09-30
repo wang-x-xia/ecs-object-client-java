@@ -53,10 +53,7 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.http.params.BasicHttpParams;
 import org.apache.http.params.HttpConnectionParams;
 import org.apache.http.params.HttpParams;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,14 +69,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class S3JerseyClientTest extends AbstractS3ClientTest {
     private static final Logger log = LoggerFactory.getLogger(S3JerseyClientTest.class);
-    private boolean testIAM = false;
+    protected boolean testIAM = false;
 
-    protected boolean isIAMUser() {
+    @Before
+    public void checkIamUser() {
         try {
             Properties props = TestConfig.getProperties();
-            return Boolean.parseBoolean(props.getProperty(TestProperties.S3_IAM_USER));
-        } catch (Exception e) {
-            return false;
+            testIAM = Boolean.parseBoolean(props.getProperty(TestProperties.S3_IAM_USER));
+        } catch (Exception ignored) {
         }
     }
 
@@ -90,7 +87,6 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
 
     @Override
     public S3Client createS3Client() throws Exception {
-        testIAM = isIAMUser();
         return new S3JerseyClient(createS3Config());
     }
 
@@ -189,6 +185,8 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
 
     @Test
     public void testCreateFilesystemBucket() {
+        Assume.assumeFalse("FS buckets are not supported with IAM user.", testIAM);
+
         String bucketName = getTestBucket() + "-y";
 
         client.createBucket(new CreateBucketRequest(bucketName).withFileSystemEnabled(true));
@@ -392,7 +390,7 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
         try {
             client.deleteObject(request);
             Assert.fail("expected 403");
-        }catch (S3Exception e) {
+        } catch (S3Exception e) {
             Assert.assertEquals(403, e.getHttpCode());
         }
 
@@ -514,7 +512,8 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
 
     @Test
     public void testSetGetBucketAcl() throws Exception {
-        String identity = createS3Config().getIdentity();
+        // need to get canonical user ID from bucket ACL (for IAM users, this is different from the access key)
+        String identity = client.getBucketAcl(getTestBucket()).getOwner().getId();
         CanonicalUser owner = new CanonicalUser(identity, identity);
         AccessControlList acl = new AccessControlList();
         acl.setOwner(owner);
@@ -527,7 +526,8 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
 
     @Test
     public void testSetBucketAclCanned() throws Exception {
-        String identity = createS3Config().getIdentity();
+        // need to get canonical user ID from bucket ACL (for IAM users, this is different from the access key)
+        String identity = client.getBucketAcl(getTestBucket()).getOwner().getId();
         CanonicalUser owner = new CanonicalUser(identity, identity);
         AccessControlList acl = new AccessControlList();
         acl.setOwner(owner);
@@ -881,8 +881,7 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
         }
     }
 
-    protected void assertForListVersionsPaging(int size, int requestCount)
-    {
+    protected void assertForListVersionsPaging(int size, int requestCount) {
         Assert.assertEquals("The correct number of versions were NOT returned", 6, size);
         Assert.assertEquals("should be 3 pages", 3, requestCount);
     }
@@ -1554,14 +1553,11 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
             //this does NOT assume that the list comes back in sequential order
             if (part.getPartNumber() == 1) {
                 Assert.assertEquals(mp1.getRawETag(), mpp.get(0).getRawETag());
-            }
-            else if (part.getPartNumber() == 2) {
+            } else if (part.getPartNumber() == 2) {
                 Assert.assertEquals(mp2.getRawETag(), mpp.get(1).getRawETag());
-            }
-            else if (part.getPartNumber() == 3) {
+            } else if (part.getPartNumber() == 3) {
                 Assert.assertEquals(mp3.getRawETag(), mpp.get(2).getRawETag());
-            }
-            else {
+            } else {
                 Assert.fail("Unknown Part number: " + part.getPartNumber());
             }
         }
@@ -2393,15 +2389,16 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
         for (AbstractDeleteResult result : resultList) {
             if (result instanceof DeleteError) {
                 this.inspectDeleteError((DeleteError) result);
-            }
-            else {
+            } else {
                 this.inspectDeleteSuccess((DeleteSuccess) result);
             }
         }
     }
+
     protected void inspectDeleteError(DeleteError deleteResult) {
         Assert.assertNotNull(deleteResult);
     }
+
     protected void inspectDeleteSuccess(DeleteSuccess deleteResult) {
         Assert.assertNotNull(deleteResult);
     }
@@ -2418,7 +2415,7 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
         try {
             client.getObjectMetadata(getTestBucket(), key);
             Assert.fail("expected 404 Not Found");
-        } catch(S3Exception e) {
+        } catch (S3Exception e) {
             Assert.assertEquals(404, e.getHttpCode());
         }
     }
@@ -2779,6 +2776,8 @@ public class S3JerseyClientTest extends AbstractS3ClientTest {
             } catch (Throwable e) {
                 while (e.getCause() != null && e.getCause() != e) e = e.getCause();
                 if (e instanceof SocketException && e.getMessage().startsWith("Broken pipe")) continue;
+                // some versions of ECS reset the socket of ongoing uploads after an abort
+                if (e instanceof SocketException && e.getMessage().startsWith("Connection reset")) continue;
                 if (!(e instanceof S3Exception)) throw new RuntimeException(e);
                 S3Exception se = (S3Exception) e;
                 if (!"NoSuchUpload".equals(se.getErrorCode()) && !"NoSuchKey".equals(se.getErrorCode()))
